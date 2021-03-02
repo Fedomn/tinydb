@@ -53,7 +53,7 @@ func (db *Db) init() error {
 		// page struct will memory alignment
 		// buf[:] to get slice struct array address
 		page := db.pageInBuffer(buf[:], i)
-		page.id = uint64(i)
+		page.id = pgid(i)
 		page.desc = fmt.Sprintf("page-%d", i)
 	}
 
