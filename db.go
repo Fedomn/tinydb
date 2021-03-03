@@ -40,7 +40,17 @@ func Open(path string) (*Db, error) {
 			return nil, err
 		}
 	} else {
-		// TODO
+		// read meta page to validate
+		var buf [4069]byte
+		bw, err := db.file.ReadAt(buf[:], 0)
+		if err == nil && bw == len(buf) {
+			m := db.pageInBuffer(buf[:], 0).meta()
+			if err = m.validate(); err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, ErrInvalid
+		}
 	}
 
 	return db, nil
