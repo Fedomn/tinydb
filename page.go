@@ -8,8 +8,11 @@ import (
 type pgid uint64
 
 type page struct {
-	id   pgid
-	desc string
+	id pgid
+}
+
+func (p *page) meta() *meta {
+	return (*meta)(unsafeAdd(unsafe.Pointer(p), unsafe.Sizeof(*p)))
 }
 
 type meta struct {
@@ -27,4 +30,13 @@ func (m *meta) sum64() uint64 {
 	dataBeforeChecksum := (*[unsafe.Offsetof(meta{}.checksum)]byte)(unsafe.Pointer(m))
 	_, _ = h.Write(dataBeforeChecksum[:])
 	return h.Sum64()
+}
+
+func (m *meta) validate() error {
+	if m.version != tinyDBVersion {
+		return ErrVersionMismatch
+	} else if m.checksum != 0 && m.checksum != m.sum64() {
+		return ErrChecksum
+	}
+	return nil
 }

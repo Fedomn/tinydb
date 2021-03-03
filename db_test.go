@@ -44,8 +44,8 @@ func TestOpen_InitDBFile(t *testing.T) {
 	}
 
 	readFileBuf, _ := ioutil.ReadFile(path)
-	p := (*page)(unsafe.Pointer(&readFileBuf[2*os.Getpagesize()]))
-	if p.desc != "page-2" {
-		t.Fatalf("unexepct page content %v", p)
+	firstPage := (*page)(unsafe.Pointer(&readFileBuf[os.Getpagesize()]))
+	if err := firstPage.meta().validate(); err != nil {
+		t.Fatalf("incorrect page meta %v", err)
 	}
 }

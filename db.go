@@ -1,7 +1,6 @@
 package tinydb
 
 import (
-	"fmt"
 	"os"
 	"unsafe"
 )
@@ -12,6 +11,7 @@ type Db struct {
 	pageSize int
 }
 
+const tinyDBVersion = 1
 const fileMode = 0666
 
 // default page size for db is set to the OS page size.
@@ -49,13 +49,28 @@ func Open(path string) (*Db, error) {
 // init creates a new database file and initialize its meta pages.
 func (db *Db) init() error {
 	buf := make([]byte, db.pageSize*4)
-	for i := 0; i < 4; i++ {
+	// first create two meta pages
+	for i := 0; i < 2; i++ {
 		// page struct will memory alignment
 		// buf[:] to get slice struct array address
 		page := db.pageInBuffer(buf[:], i)
 		page.id = pgid(i)
-		page.desc = fmt.Sprintf("page-%d", i)
+
+		// init meta page
+		m := page.meta()
+		m.pgid = pgid(i)
+		m.pageSize = uint32(db.pageSize)
+		m.version = tinyDBVersion
+		m.checksum = m.sum64()
 	}
+
+	// create a freelist page
+	p := db.pageInBuffer(buf[:], 2)
+	p.id = pgid(2)
+
+	// create a empty leaf page for preparation
+	p = db.pageInBuffer(buf[:], 3)
+	p.id = pgid(2)
 
 	if _, err := db.file.Write(buf); err != nil {
 		return err
