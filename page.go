@@ -5,14 +5,53 @@ import (
 	"unsafe"
 )
 
+const (
+	branchPageFlag   = 0x01
+	leafPageFlag     = 0x02
+	metaPageFlag     = 0x04
+	freelistPageFlag = 0x10
+)
+
 type pgid uint64
 
 type page struct {
-	id pgid
+	id    pgid
+	flags uint16 // different pages type
 }
 
 func (p *page) meta() *meta {
 	return (*meta)(unsafeAdd(unsafe.Pointer(p), unsafe.Sizeof(*p)))
+}
+
+// branchPageElement represents a node on a branch page
+// reference see: https://cdn.jsdelivr.net/gh/lichuang/lichuang.github.io/media/imgs/20200625-boltdb-1/branch-page-layout.png
+type branchPageElement struct {
+	pos   uint32
+	ksize uint32
+	pgid  pgid // child's pgid
+}
+
+func (n *branchPageElement) key() []byte {
+	return unsafeByteSlice(unsafe.Pointer(n), 0, int(n.pos), int(n.pos)+int(n.ksize))
+}
+
+// leafPageElement represents a node on a leaf page
+// reference see: https://cdn.jsdelivr.net/gh/lichuang/lichuang.github.io/media/imgs/20200625-boltdb-1/leaf-page-layout.png
+type leafPageElement struct {
+	flags uint32 // leaf-page or sub-bucket
+	pos   uint32
+	ksize uint32
+	vsize uint32
+}
+
+func (n *leafPageElement) key() []byte {
+	return unsafeByteSlice(unsafe.Pointer(n), 0, int(n.pos), int(n.pos)+int(n.ksize))
+}
+
+func (n *leafPageElement) value() []byte {
+	i := int(n.ksize + n.pos)
+	j := i + int(n.vsize)
+	return unsafeByteSlice(unsafe.Pointer(n), 0, i, j)
 }
 
 type meta struct {
