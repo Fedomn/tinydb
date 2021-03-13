@@ -91,3 +91,43 @@ func TestNode_ReadLeafPage(t *testing.T) {
 		t.Fatalf("expect inode-2: key2:val2 , got %s:%s", k, v)
 	}
 }
+
+func TestNode_WriteLeafPage(t *testing.T) {
+	n1 := &node{
+		isLeaf: true,
+		inodes: make(inodes, 0),
+	}
+	n1.put([]byte("k2"), []byte("v2"), 0)
+	n1.put([]byte("k3"), []byte("v3"), 0)
+	n1.put([]byte("k1"), []byte("v1"), 0)
+	n1.put([]byte("k1"), []byte("v4"), 0)
+
+	var buf [4096]byte
+	p := (*page)(unsafe.Pointer(&buf[0]))
+	n1.write(p)
+
+	n := &node{}
+	n.read(p)
+
+	if len(n.inodes) != 3 {
+		t.Fatalf("expect inodes is 3; got %d", len(n.inodes))
+	}
+
+	k := string(n.inodes[0].key)
+	v := string(n.inodes[0].value)
+	if k != "k1" || v != "v4" {
+		t.Fatalf("expect k1 at 0, got %s:%s", k, v)
+	}
+
+	k = string(n.inodes[1].key)
+	v = string(n.inodes[1].value)
+	if k != "k2" || v != "v2" {
+		t.Fatalf("expect k2 at 1, got %s:%s", k, v)
+	}
+
+	k = string(n.inodes[2].key)
+	v = string(n.inodes[2].value)
+	if k != "k3" || v != "v3" {
+		t.Fatalf("expect k3 at 0, got %s:%s", k, v)
+	}
+}

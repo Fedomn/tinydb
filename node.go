@@ -3,6 +3,7 @@ package tinydb
 import (
 	"bytes"
 	"sort"
+	"unsafe"
 )
 
 // node represents an in-memory, deserialized page.
@@ -67,5 +68,53 @@ func (n *node) read(p *page) {
 			inode.pgid = elem.pgid
 			inode.key = elem.key()
 		}
+	}
+}
+
+func (n *node) write(p *page) {
+	if n.isLeaf {
+		p.flags |= leafPageFlag
+	} else {
+		p.flags |= branchPageFlag
+	}
+
+	p.count = uint16(len(n.inodes))
+	// no items need to write, just do nothing
+	if p.count == 0 {
+		return
+	}
+
+	// pageElement layout [pageElem1, pageElem2, pageElemData1, pageElemData1]
+	pageElemDataOffset := pageHeaderSize + n.pageElementSize()*uintptr(len(n.inodes))
+	for idx, item := range n.inodes {
+		dataOffset := len(item.key) + len(item.value)
+		pageElemData := unsafeByteSlice(unsafe.Pointer(p), pageElemDataOffset, 0, dataOffset)
+		pageElemDataOffset += uintptr(dataOffset)
+
+		if n.isLeaf {
+			pageElem := p.leafPageElement(uint16(idx))
+			pageElem.pos = uint32(uintptr(unsafe.Pointer(&pageElemData[0])) - uintptr(unsafe.Pointer(pageElem)))
+			pageElem.flags = item.flags
+			pageElem.ksize = uint32(len(item.key))
+			pageElem.vsize = uint32(len(item.value))
+		} else {
+			pageElem := p.branchPageElement(uint16(idx))
+			pageElem.pos = uint32(uintptr(unsafe.Pointer(&pageElemData[0])) - uintptr(unsafe.Pointer(pageElem)))
+			pageElem.ksize = uint32(len(item.key))
+			pageElem.pgid = item.pgid
+		}
+
+		// write pageElemData key
+		copiedSize := copy(pageElemData, item.key)
+		// write pageElemData value
+		copy(pageElemData[copiedSize:], item.value)
+	}
+}
+
+func (n *node) pageElementSize() uintptr {
+	if n.isLeaf {
+		return leafPageElementSize
+	} else {
+		return branchPageElementSize
 	}
 }
