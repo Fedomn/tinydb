@@ -7,6 +7,7 @@ import (
 
 // node represents an in-memory, deserialized page.
 type node struct {
+	isLeaf   bool
 	parent   *node
 	children nodes
 	inodes   inodes
@@ -48,4 +49,23 @@ func (n *node) put(key, value []byte, pgid pgid) {
 	inode.key = key
 	inode.value = value
 	inode.pgid = pgid
+}
+
+func (n *node) read(p *page) {
+	n.isLeaf = (p.flags & leafPageFlag) != 0
+	n.inodes = make(inodes, p.count)
+
+	for i := 0; i < int(p.count); i++ {
+		inode := &n.inodes[i]
+		if n.isLeaf {
+			elem := p.leafPageElement(uint16(i))
+			inode.flags = elem.flags
+			inode.key = elem.key()
+			inode.value = elem.value()
+		} else {
+			elem := p.branchPageElement(uint16(i))
+			inode.pgid = elem.pgid
+			inode.key = elem.key()
+		}
+	}
 }
