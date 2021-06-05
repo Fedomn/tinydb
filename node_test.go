@@ -7,10 +7,10 @@ import (
 
 func TestNode_Put(t *testing.T) {
 	n := node{inodes: make(inodes, 0)}
-	n.put([]byte("k2"), []byte("v2"), 0)
-	n.put([]byte("k3"), []byte("v3"), 0)
-	n.put([]byte("k1"), []byte("v1"), 0)
-	n.put([]byte("k1"), []byte("v4"), 0)
+	n.put([]byte("k2"), []byte("k2"), []byte("v2"), 0, 0)
+	n.put([]byte("k3"), []byte("k3"), []byte("v3"), 0, 0)
+	n.put([]byte("k1"), []byte("k1"), []byte("v1"), 0, 0)
+	n.put([]byte("k1"), []byte("k1"), []byte("v4"), 0, 0)
 
 	if len(n.inodes) != 3 {
 		t.Fatalf("expect inodes is 3; got %d", len(n.inodes))
@@ -97,10 +97,10 @@ func TestNode_WriteLeafPage(t *testing.T) {
 		isLeaf: true,
 		inodes: make(inodes, 0),
 	}
-	n1.put([]byte("k2"), []byte("v2"), 0)
-	n1.put([]byte("k3"), []byte("v3"), 0)
-	n1.put([]byte("k1"), []byte("v1"), 0)
-	n1.put([]byte("k1"), []byte("v4"), 0)
+	n1.put([]byte("k2"), []byte("k2"), []byte("v2"), 0, 0)
+	n1.put([]byte("k3"), []byte("k3"), []byte("v3"), 0, 0)
+	n1.put([]byte("k1"), []byte("k1"), []byte("v1"), 0, 0)
+	n1.put([]byte("k1"), []byte("k1"), []byte("v4"), 0, 0)
 
 	var buf [4096]byte
 	p := (*page)(unsafe.Pointer(&buf[0]))
@@ -129,5 +129,61 @@ func TestNode_WriteLeafPage(t *testing.T) {
 	v = string(n.inodes[2].value)
 	if k != "k3" || v != "v3" {
 		t.Fatalf("expect k3 at 0, got %s:%s", k, v)
+	}
+}
+
+// Ensure that a node can split into appropriate subgroups.
+func TestNode_split(t *testing.T) {
+	// Create a node.
+	n := &node{inodes: make(inodes, 0), bucket: &Bucket{tx: &Tx{db: &Db{}, meta: &meta{pgid: 1}}}}
+	n.put([]byte("00000001"), []byte("00000001"), []byte("0123456701234567"), 0, 0)
+	n.put([]byte("00000002"), []byte("00000002"), []byte("0123456701234567"), 0, 0)
+	n.put([]byte("00000003"), []byte("00000003"), []byte("0123456701234567"), 0, 0)
+	n.put([]byte("00000004"), []byte("00000004"), []byte("0123456701234567"), 0, 0)
+	n.put([]byte("00000005"), []byte("00000005"), []byte("0123456701234567"), 0, 0)
+
+	// Split between 2 & 3.
+	n.split(100)
+
+	var parent = n.parent
+	if len(parent.children) != 2 {
+		t.Fatalf("exp=2; got=%d", len(parent.children))
+	}
+	if len(parent.children[0].inodes) != 2 {
+		t.Fatalf("exp=2; got=%d", len(parent.children[0].inodes))
+	}
+	if len(parent.children[1].inodes) != 3 {
+		t.Fatalf("exp=3; got=%d", len(parent.children[1].inodes))
+	}
+}
+
+// Ensure that a page with the minimum number of inodes just returns a single node.
+func TestNode_split_MinKeys(t *testing.T) {
+	// Create a node.
+	n := &node{inodes: make(inodes, 0), bucket: &Bucket{tx: &Tx{db: &Db{}, meta: &meta{pgid: 1}}}}
+	n.put([]byte("00000001"), []byte("00000001"), []byte("0123456701234567"), 0, 0)
+	n.put([]byte("00000002"), []byte("00000002"), []byte("0123456701234567"), 0, 0)
+
+	// Split.
+	n.split(20)
+	if n.parent != nil {
+		t.Fatalf("expected nil parent")
+	}
+}
+
+// Ensure that a node that has keys that all fit on a page just returns one leaf.
+func TestNode_split_SinglePage(t *testing.T) {
+	// Create a node.
+	n := &node{inodes: make(inodes, 0), bucket: &Bucket{tx: &Tx{db: &Db{}, meta: &meta{pgid: 1}}}}
+	n.put([]byte("00000001"), []byte("00000001"), []byte("0123456701234567"), 0, 0)
+	n.put([]byte("00000002"), []byte("00000002"), []byte("0123456701234567"), 0, 0)
+	n.put([]byte("00000003"), []byte("00000003"), []byte("0123456701234567"), 0, 0)
+	n.put([]byte("00000004"), []byte("00000004"), []byte("0123456701234567"), 0, 0)
+	n.put([]byte("00000005"), []byte("00000005"), []byte("0123456701234567"), 0, 0)
+
+	// Split.
+	n.split(4096)
+	if n.parent != nil {
+		t.Fatalf("expected nil parent")
 	}
 }
