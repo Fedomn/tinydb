@@ -9,14 +9,15 @@ import (
 
 // node represents an in-memory, deserialized page.
 type node struct {
-	bucket   *Bucket
-	isLeaf   bool
-	spilled  bool
-	key      []byte // first inode key
-	pgid     pgid
-	parent   *node
-	children nodes
-	inodes   inodes
+	bucket     *Bucket
+	isLeaf     bool
+	unbalanced bool
+	spilled    bool
+	key        []byte // first inode key
+	pgid       pgid
+	parent     *node
+	children   nodes
+	inodes     inodes
 }
 
 // root returns the top-level node this node is attached to.
@@ -357,4 +358,192 @@ func (n *node) dereference() {
 
 	// Update statistics.
 	n.bucket.tx.stats.NodeDeref++
+}
+
+// minKeys returns the minimum number of inodes this node should have.
+func (n *node) minKeys() int {
+	if n.isLeaf {
+		return 1
+	}
+	return 2
+}
+
+// rebalance attempts to combine the node with sibling nodes if the node fill
+// size is below a threshold or if there are not enough keys.
+func (n *node) rebalance() {
+	if !n.unbalanced {
+		return
+	}
+	n.unbalanced = false
+
+	// Update statistics.
+	n.bucket.tx.stats.Rebalance++
+
+	// Ignore if node is above threshold (25%) and has enough keys.
+	var threshold = n.bucket.tx.db.pageSize / 4
+	if int(n.size()) > threshold && len(n.inodes) > n.minKeys() {
+		return
+	}
+
+	// Root node has special handling.
+	if n.parent == nil {
+		// If root node is a branch and only has one node then collapse it.
+		if !n.isLeaf && len(n.inodes) == 1 {
+			// Move root's child up.
+			child := n.bucket.node(n.inodes[0].pgid, n)
+			n.isLeaf = child.isLeaf
+			n.inodes = child.inodes[:]
+			n.children = child.children
+
+			// Reparent all child nodes being moved.
+			for _, inode := range n.inodes {
+				if child, ok := n.bucket.nodes[inode.pgid]; ok {
+					child.parent = n
+				}
+			}
+
+			// Remove old child.
+			child.parent = nil
+			delete(n.bucket.nodes, child.pgid)
+			child.free()
+		}
+
+		return
+	}
+
+	// If node has no keys then just remove it.
+	if n.numChildren() == 0 {
+		n.parent.del(n.key)
+		n.parent.removeChild(n)
+		delete(n.bucket.nodes, n.pgid)
+		n.free()
+		n.parent.rebalance()
+		return
+	}
+
+	// Destination node is right sibling if idx == 0, otherwise left sibling.
+	var target *node
+	var useNextSibling = (n.parent.childIndex(n) == 0)
+	if useNextSibling {
+		target = n.nextSibling()
+	} else {
+		target = n.prevSibling()
+	}
+
+	// If both this node and the target node are too small then merge them.
+	if useNextSibling {
+		// Reparent all child nodes being moved.
+		for _, inode := range target.inodes {
+			if child, ok := n.bucket.nodes[inode.pgid]; ok {
+				child.parent.removeChild(child)
+				child.parent = n
+				child.parent.children = append(child.parent.children, child)
+			}
+		}
+
+		// Copy over inodes from target and remove target.
+		n.inodes = append(n.inodes, target.inodes...)
+		n.parent.del(target.key)
+		n.parent.removeChild(target)
+		delete(n.bucket.nodes, target.pgid)
+		target.free()
+	} else {
+		// Reparent all child nodes being moved.
+		for _, inode := range n.inodes {
+			if child, ok := n.bucket.nodes[inode.pgid]; ok {
+				child.parent.removeChild(child)
+				child.parent = target
+				child.parent.children = append(child.parent.children, child)
+			}
+		}
+
+		// Copy over inodes to target and remove node.
+		target.inodes = append(target.inodes, n.inodes...)
+		n.parent.del(n.key)
+		n.parent.removeChild(n)
+		delete(n.bucket.nodes, n.pgid)
+		n.free()
+	}
+
+	// Either this node or the target node was deleted from the parent so rebalance it.
+	n.parent.rebalance()
+}
+
+// free adds the node's underlying page to the freelist.
+func (n *node) free() {
+	if n.pgid != 0 {
+		n.bucket.tx.db.freelist.free(n.bucket.tx.meta.txid, n.bucket.tx.page(n.pgid))
+		n.pgid = 0
+	}
+}
+
+// childIndex returns the index of a given child node.
+func (n *node) childIndex(child *node) int {
+	index := sort.Search(len(n.inodes), func(i int) bool { return bytes.Compare(n.inodes[i].key, child.key) != -1 })
+	return index
+}
+
+// numChildren returns the number of children.
+func (n *node) numChildren() int {
+	return len(n.inodes)
+}
+
+// nextSibling returns the next node with the same parent.
+func (n *node) nextSibling() *node {
+	if n.parent == nil {
+		return nil
+	}
+	index := n.parent.childIndex(n)
+	if index >= n.parent.numChildren()-1 {
+		return nil
+	}
+	return n.parent.childAt(index + 1)
+}
+
+// prevSibling returns the previous node with the same parent.
+func (n *node) prevSibling() *node {
+	if n.parent == nil {
+		return nil
+	}
+	index := n.parent.childIndex(n)
+	if index == 0 {
+		return nil
+	}
+	return n.parent.childAt(index - 1)
+}
+
+// childAt returns the child node at a given index.
+func (n *node) childAt(index int) *node {
+	if n.isLeaf {
+		panic(fmt.Sprintf("invalid childAt(%d) on a leaf node", index))
+	}
+	return n.bucket.node(n.inodes[index].pgid, n)
+}
+
+// del removes a key from the node.
+func (n *node) del(key []byte) {
+	// Find index of key.
+	index := sort.Search(len(n.inodes), func(i int) bool { return bytes.Compare(n.inodes[i].key, key) != -1 })
+
+	// Exit if the key isn't found.
+	if index >= len(n.inodes) || !bytes.Equal(n.inodes[index].key, key) {
+		return
+	}
+
+	// Delete inode from the node.
+	n.inodes = append(n.inodes[:index], n.inodes[index+1:]...)
+
+	// Mark the node as needing rebalancing.
+	n.unbalanced = true
+}
+
+// removes a node from the list of in-memory children.
+// This does not affect the inodes.
+func (n *node) removeChild(target *node) {
+	for i, child := range n.children {
+		if child == target {
+			n.children = append(n.children[:i], n.children[i+1:]...)
+			return
+		}
+	}
 }
