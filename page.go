@@ -1,7 +1,9 @@
 package tinydb
 
 import (
+	"fmt"
 	"hash/fnv"
+	"sort"
 	"unsafe"
 )
 
@@ -19,9 +21,11 @@ const leafPageElementSize = unsafe.Sizeof(leafPageElement{})
 type pgid uint64
 
 type page struct {
-	id    pgid
-	flags uint16 // different pages type
-	count uint16 // pageElement counts
+	id       pgid
+	flags    uint16 // different pages type
+	count    uint16 // pageElement counts
+	overflow uint32
+	ptr      uintptr
 }
 
 func (p *page) meta() *meta {
@@ -73,6 +77,7 @@ type meta struct {
 	version  uint32
 	pageSize uint32
 	pgid     pgid
+	txid     txid
 	checksum uint64
 }
 
@@ -93,4 +98,66 @@ func (m *meta) validate() error {
 		return ErrChecksum
 	}
 	return nil
+}
+
+type pgids []pgid
+
+func (s pgids) Len() int           { return len(s) }
+func (s pgids) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
+func (s pgids) Less(i, j int) bool { return s[i] < s[j] }
+
+// merge returns the sorted union of a and b.
+func (a pgids) merge(b pgids) pgids {
+	// Return the opposite slice if one is nil.
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 {
+		return a
+	}
+	merged := make(pgids, len(a)+len(b))
+	mergepgids(merged, a, b)
+	return merged
+}
+
+// mergepgids copies the sorted union of a and b into dst.
+// If dst is too small, it panics.
+func mergepgids(dst, a, b pgids) {
+	if len(dst) < len(a)+len(b) {
+		panic(fmt.Errorf("mergepgids bad len %d < %d + %d", len(dst), len(a), len(b)))
+	}
+	// Copy in the opposite slice if one is nil.
+	if len(a) == 0 {
+		copy(dst, b)
+		return
+	}
+	if len(b) == 0 {
+		copy(dst, a)
+		return
+	}
+
+	// Merged will hold all elements from both lists.
+	merged := dst[:0]
+
+	// Assign lead to the slice with a lower starting value, follow to the higher value.
+	lead, follow := a, b
+	if b[0] < a[0] {
+		lead, follow = b, a
+	}
+
+	// Continue while there are elements in the lead.
+	for len(lead) > 0 {
+		// Merge largest prefix of lead that is ahead of follow[0].
+		n := sort.Search(len(lead), func(i int) bool { return lead[i] > follow[0] })
+		merged = append(merged, lead[:n]...)
+		if n >= len(lead) {
+			break
+		}
+
+		// Swap lead and follow.
+		lead, follow = follow, lead[n:]
+	}
+
+	// Append what's left in follow.
+	_ = append(merged, follow...)
 }

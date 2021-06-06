@@ -25,3 +25,14 @@ type bucket struct {
 	root     pgid   // page id of the bucket's root-level page
 	sequence uint64 // monotonically incrementing, used by NextSequence()
 }
+
+// dereference removes all references to the old mmap.
+func (b *Bucket) dereference() {
+	if b.rootNode != nil {
+		b.rootNode.root().dereference()
+	}
+
+	for _, child := range b.buckets {
+		child.dereference()
+	}
+}

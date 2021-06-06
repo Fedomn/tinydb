@@ -32,6 +32,37 @@ type Tx struct {
 	WriteFlag int
 }
 
+// page returns a reference to the page with a given id.
+// If page has been written to then a temporary buffered page is returned.
+func (tx *Tx) page(id pgid) *page {
+	// Check the dirty pages first.
+	if tx.pages != nil {
+		if p, ok := tx.pages[id]; ok {
+			return p
+		}
+	}
+
+	// Otherwise return directly from the mmap.
+	return tx.db.page(id)
+}
+
+// allocate returns a contiguous block of memory starting at a given page.
+func (tx *Tx) allocate(count int) (*page, error) {
+	p, err := tx.db.allocate(count)
+	if err != nil {
+		return nil, err
+	}
+
+	// Save to our page cache.
+	tx.pages[p.id] = p
+
+	// Update statistics.
+	tx.stats.PageCount++
+	tx.stats.PageAlloc += count * tx.db.pageSize
+
+	return p, nil
+}
+
 // TxStats represents statistics about the actions performed by the transaction.
 type TxStats struct {
 	// Page statistics.

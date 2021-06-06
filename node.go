@@ -2,6 +2,7 @@ package tinydb
 
 import (
 	"bytes"
+	"fmt"
 	"sort"
 	"unsafe"
 )
@@ -161,9 +162,25 @@ func (n *node) spill() error {
 	// Split nodes into appropriate sizes. The first node will always be n.
 	var nodes = n.split(uintptr(tx.db.pageSize))
 	for _, node := range nodes {
-		// TODO
-		// free old pages
-		// allocate new pages
+		// Add node's page to the freelist if it's not new.
+		if node.pgid > 0 {
+			tx.db.freelist.free(tx.meta.txid, tx.page(node.pgid))
+			node.pgid = 0
+		}
+
+		// Allocate contiguous space for the node.
+		p, err := tx.allocate((int(node.size()) / tx.db.pageSize) + 1)
+		if err != nil {
+			return err
+		}
+
+		// Write the node.
+		if p.id >= tx.meta.pgid {
+			panic(fmt.Sprintf("pgid (%d) above high water mark (%d)", p.id, tx.meta.pgid))
+		}
+		node.pgid = p.id
+		node.write(p)
+		node.spilled = true
 
 		node.spilled = true
 
@@ -300,4 +317,44 @@ func (n *node) splitIndex(threshold int) (index, sz uintptr) {
 	}
 
 	return
+}
+
+// size returns the size of the node after serialization.
+func (n *node) size() uintptr {
+	sz, elsz := pageHeaderSize, n.pageElementSize()
+	for i := 0; i < len(n.inodes); i++ {
+		item := &n.inodes[i]
+		sz += elsz + uintptr(len(item.key)) + uintptr(len(item.value))
+	}
+	return sz
+}
+
+// dereference causes the node to copy all its inode key/value references to heap memory.
+// This is required when the mmap is reallocated so inodes are not pointing to stale data.
+func (n *node) dereference() {
+	if n.key != nil {
+		key := make([]byte, len(n.key))
+		copy(key, n.key)
+		n.key = key
+	}
+
+	for i := range n.inodes {
+		inode := &n.inodes[i]
+
+		key := make([]byte, len(inode.key))
+		copy(key, inode.key)
+		inode.key = key
+
+		value := make([]byte, len(inode.value))
+		copy(value, inode.value)
+		inode.value = value
+	}
+
+	// Recursively dereference children.
+	for _, child := range n.children {
+		child.dereference()
+	}
+
+	// Update statistics.
+	n.bucket.tx.stats.NodeDeref++
 }
